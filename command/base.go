@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	hcpengine "github.com/hashicorp/hcp-vault-engine-poc"
 	"github.com/hashicorp/vault/api"
 	"github.com/hashicorp/vault/command/token"
 	"github.com/hashicorp/vault/helper/namespace"
@@ -71,13 +72,26 @@ type BaseCommand struct {
 	tokenHelper token.TokenHelper
 
 	client *api.Client
+
+	hcpConfig *hcpengine.HCPConfig
 }
 
 // Client returns the HTTP API client. The client is cached on the command to
 // save performance on future calls.
 func (c *BaseCommand) Client() (*api.Client, error) {
+	if c.hcpConfig.Status() == hcpengine.Expired {
+		return nil, fmt.Errorf("hcp token expired, sign in again to access Vault cluster")
+	}
+
 	// Read the test client if present
 	if c.client != nil {
+		// update token in case it has been refreshed or disconnected
+		if c.hcpConfig.Status() == hcpengine.Connected {
+			c.client.SetHCPToken(c.hcpConfig.Token())
+		} else {
+			c.client.SetHCPToken(nil)
+		}
+
 		return c.client, nil
 	}
 
@@ -87,11 +101,15 @@ func (c *BaseCommand) Client() (*api.Client, error) {
 		return nil, errors.Wrap(err, "failed to read environment")
 	}
 
-	if c.flagAddress != "" {
-		config.Address = c.flagAddress
-	}
-	if c.flagAgentProxyAddress != "" {
-		config.Address = c.flagAgentProxyAddress
+	if c.hcpConfig.Status() == hcpengine.Connected {
+		config.Address = c.hcpConfig.ProxyAddr()
+	} else {
+		if c.flagAddress != "" {
+			config.Address = c.flagAddress
+		}
+		if c.flagAgentProxyAddress != "" {
+			config.Address = c.flagAgentProxyAddress
+		}
 	}
 
 	if c.flagOutputCurlString {
